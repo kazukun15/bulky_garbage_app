@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import List, Dict
 import pandas as pd
+from fpdf import FPDF
 
 # ---------------------------
 # 五十音順ソート用簡易変換関数（カタカナ→ヒラガナ）
@@ -149,13 +150,34 @@ def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
     return all_items
 
 # ---------------------------
+# PDF出力用関数（FPDF利用）
+# ---------------------------
+def generate_pdf(selected_items: List[Dict]) -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    # ヘッダー
+    pdf.cell(60, 10, "品名", border=1)
+    pdf.cell(40, 10, "区分", border=1)
+    pdf.cell(40, 10, "料金", border=1)
+    pdf.ln()
+    for item in selected_items:
+        pdf.cell(60, 10, str(item['product']), border=1)
+        type_str = "収集" if item.get("chosen_type") == "collection" else "直接搬入"
+        pdf.cell(40, 10, type_str, border=1)
+        pdf.cell(40, 10, str(item.get("chosen_price", "")), border=1)
+        pdf.ln()
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    return pdf_bytes
+
+# ---------------------------
 # Streamlitアプリ本体
 # ---------------------------
 def main():
     st.set_page_config(page_title="粗大ごみ品目管理アプリ", layout="wide")
-    st.title("粗大ごみ品目管理アプリ（検索・合計ボタン付き・データ保持対応）")
+    st.title("粗大ごみ品目管理アプリ（検索・合計・PDF出力機能付き）")
 
-    # セッション変数の初期化（既にデータがあれば上書きしない）
+    # セッション変数の初期化（既存データを保持）
     if "extracted_items" not in st.session_state:
         st.session_state.extracted_items = []
     if "selected_items" not in st.session_state:
@@ -165,7 +187,7 @@ def main():
     if "total_price" not in st.session_state:
         st.session_state.total_price = 0
 
-    # サイドバー：データリセットボタン（読み込み済みデータと選択済み品目をクリア）
+    # サイドバー：データリセットボタン
     st.sidebar.header("操作メニュー")
     if st.sidebar.button("データをリセットする"):
         st.session_state.extracted_items = []
@@ -176,11 +198,9 @@ def main():
 
     # 入力ファイル形式の選択
     file_format = st.sidebar.radio("入力ファイル形式の選択", ("PDF", "CSV"))
-
     if file_format == "PDF":
         pdf_source = st.sidebar.radio("PDF入力元の選択", ("アップロード", "PDFフォルダから読み込み"))
         if pdf_source == "アップロード":
-            # すでにデータがある場合は再読み込みしない
             if not st.session_state.extracted_items:
                 uploaded_file = st.sidebar.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
                 if uploaded_file is not None:
@@ -228,14 +248,13 @@ def main():
             ]
         else:
             filtered_items = st.session_state.extracted_items.copy()
-
         if sort_method == "五十音順":
             filtered_items.sort(key=lambda x: kana_to_hira(x["product"]))
     else:
         st.info("まだ品目データが読み込まれていません。")
 
     # ---------------------------------
-    # サイドバー：選択リストと合計計算ボタン
+    # サイドバー：選択リストと合計計算ボタン、PDF出力ボタン
     # ---------------------------------
     st.sidebar.markdown("---")
     st.sidebar.header("選択リスト")
@@ -257,6 +276,10 @@ def main():
         st.sidebar.write(f"合計金額: {st.session_state.total_price}円")
     else:
         st.sidebar.write("合計計算がまだ実行されていません。")
+    # PDF出力ボタン：選択リストがある場合のみ表示
+    if st.session_state.selected_items:
+        pdf_data = generate_pdf(st.session_state.selected_items)
+        st.sidebar.download_button("PDFで出力してダウンロード", data=pdf_data, file_name="selected_items.pdf", mime="application/pdf")
 
     # ---------------------------------
     # メインエリア：抽出された品目一覧（検索結果）
