@@ -163,7 +163,7 @@ def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
 # ---------------------------
 def main():
     st.set_page_config(page_title="粗大ごみ品目管理アプリ", layout="wide")
-    st.title("粗大ごみ品目管理アプリ（検索バー・五十音ソート対応）")
+    st.title("粗大ごみ品目一覧")
 
     # セッション変数の初期化
     if "extracted_items" not in st.session_state:
