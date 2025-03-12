@@ -16,21 +16,14 @@ import pandas as pd
 # ---------------------------
 async def call_gemini_api(item_text: str) -> str:
     """
-    Gemini API（models/gemini-2.0-flash）を実際に呼び出して、品目のテキストから補正・予測結果を取得する。
+    Gemini API（models/gemini-2.0-flash）を実際に呼び出して、
+    品目のテキストから補正・予測結果を取得します。
     Streamlitのsecretsに設定されたGEMINI_API_KEYを利用します。
     """
     api_key = st.secrets["GEMINI_API_KEY"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": item_text}
-                ]
-            }
-        ]
-    }
+    payload = {"contents": [{"parts": [{"text": item_text}]}]}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status != 200:
@@ -41,15 +34,16 @@ async def call_gemini_api(item_text: str) -> str:
 
 async def call_image_recognition_api(image: bytes = None) -> str:
     """
-    画像認識APIの呼び出し実装例です。
-    ※現時点ではダミー実装ですが、実際のエンドポイントが分かればここを実装してください。
+    画像認識APIの呼び出し実装例です（現時点ではダミー実装）。
+    実際のエンドポイントがある場合はここを実装してください。
     """
-    await asyncio.sleep(1)  # 模擬的なAPI応答待ち
+    await asyncio.sleep(1)  # 模擬的な応答待ち
     return "画像認識API: 補正候補結果"
 
 async def process_item_async(item: Dict) -> Dict:
     """
-    選択された品目に対して、GeminiAPIと画像認識APIを並列に呼び出し、結果をitemに追加します。
+    選択された品目に対して、GeminiAPIと画像認識APIを並列に呼び出し、
+    結果をitemに追加して返します。
     """
     gemini_result, image_result = await asyncio.gather(
         call_gemini_api(item["product"]),
@@ -63,39 +57,44 @@ async def process_item_async(item: Dict) -> Dict:
 # CSVから品名・収集料金・直接搬入料金を読み込む関数
 # ---------------------------
 @st.cache_data(show_spinner=False)
-def read_csv_data(file) -> List[Dict]:
+def process_csv_directory(csv_dir: str = "CSV") -> List[Dict]:
     """
-    アップロードされたCSVファイルから、品名、収集料金、直接搬入料金の各列を読み取り、
-    リスト形式の辞書データに変換して返します。
-    CSVのヘッダーは「品名」「収集料金」「直接搬入料金」としていることを前提とします。
+    指定されたCSVフォルダ内のすべてのCSVファイルを読み込み、
+    各行から「品名」「収集料金」「直接搬入料金」を抽出してリスト形式の辞書データに変換して返します。
+    CSVのヘッダーは「品名」「収集料金」「直接搬入料金」であることを前提とします。
     """
-    df = pd.read_csv(file)
-    # ヘッダーの前後の空白を削除
-    df.columns = [col.strip() for col in df.columns]
-    items = []
-    for _, row in df.iterrows():
-        product = str(row.get("品名", "")).strip()
-        try:
-            collection_price = int(str(row.get("収集料金", "")).replace("円", "").strip())
-        except Exception:
-            collection_price = 0
-        try:
-            direct_price = int(str(row.get("直接搬入料金", "")).replace("円", "").strip())
-        except Exception:
-            direct_price = 0
-        items.append({
-            "product": product,
-            "collection_price": collection_price,
-            "direct_price": direct_price
-        })
-    return items
+    all_items = []
+    csv_path = Path(csv_dir)
+    if not csv_path.exists():
+        st.error(f"CSVディレクトリ {csv_dir} が存在しません。")
+        return all_items
+    for csv_file in csv_path.glob("*.csv"):
+        df = pd.read_csv(csv_file)
+        df.columns = [col.strip() for col in df.columns]
+        for _, row in df.iterrows():
+            product = str(row.get("品名", "")).strip()
+            try:
+                collection_price = int(str(row.get("収集料金", "")).replace("円", "").strip())
+            except Exception:
+                collection_price = 0
+            try:
+                direct_price = int(str(row.get("直接搬入料金", "")).replace("円", "").strip())
+            except Exception:
+                direct_price = 0
+            all_items.append({
+                "product": product,
+                "collection_price": collection_price,
+                "direct_price": direct_price
+            })
+    return all_items
 
 # ---------------------------
 # PDFから品名・収集料金・直接搬入料金を抽出する関数
 # ---------------------------
 def parse_line_as_item(line: str) -> Dict:
     """
-    1行のテキストから '品名 収集料金 直接搬入料金' を抽出し、辞書形式で返す。
+    1行のテキストから「品名 収集料金 直接搬入料金」を抽出し、
+    辞書形式で返します。
     例: 'ソファ 520円 260円' → {product: 'ソファ', collection_price: 520, direct_price: 260}
     """
     parts = line.split()
@@ -116,14 +115,14 @@ def parse_line_as_item(line: str) -> Dict:
         }
     return {}
 
+@st.cache_data(show_spinner=False)
 def extract_pdf_data(pdf_path: str) -> List[Dict]:
     """
-    指定したPDFファイルから、まずpdfplumberでテキスト抽出を試み、
+    指定されたPDFファイルから、まずpdfplumberでテキスト抽出を試み、
     失敗またはテキストが取得できなかった場合はOCR（Tesseract + pdf2image）で抽出します。
-    各行を parse_line_as_item() に渡し、品名・収集料金・直接搬入料金を取り出します。
+    各行は parse_line_as_item() に渡し、品名・収集料金・直接搬入料金を取り出します。
     """
     extracted_items = []
-
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
@@ -150,12 +149,13 @@ def extract_pdf_data(pdf_path: str) -> List[Dict]:
                         extracted_items.append(item_dict)
         except Exception as e:
             st.error(f"OCRによる抽出に失敗しました: {e}")
-
     return extracted_items
 
+@st.cache_data(show_spinner=False)
 def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
     """
-    指定されたディレクトリ内のすべてのPDFファイルを処理し、全品目リストを返します。
+    指定されたPDFフォルダ内のすべてのPDFファイルを処理し、
+    全品目リストを返します。
     """
     all_items = []
     pdf_path = Path(pdf_dir)
@@ -184,7 +184,6 @@ def main():
     st.sidebar.header("操作メニュー")
     file_format = st.sidebar.radio("入力ファイル形式の選択", ("PDF", "CSV"))
 
-    # 入力元の選択：アップロード or フォルダ読み込み（PDFの場合のみ）
     if file_format == "PDF":
         pdf_source = st.sidebar.radio("PDF入力元の選択", ("アップロード", "PDFフォルダから読み込み"))
         if pdf_source == "アップロード":
@@ -204,13 +203,11 @@ def main():
                     st.session_state.extracted_items = extracted
                 st.sidebar.success("PDFフォルダからの抽出完了")
     else:
-        # CSVの場合、ファイルアップロードでCSVファイルを読み込む
-        csv_file = st.sidebar.file_uploader("CSVファイルをアップロードしてください", type=["csv"])
-        if csv_file is not None:
-            with st.spinner("CSVファイルを読み込み中..."):
-                extracted = read_csv_data(csv_file)
+        if st.sidebar.button("CSVフォルダ内のファイルを処理"):
+            with st.spinner("CSVフォルダ内のファイルを処理中..."):
+                extracted = process_csv_directory("CSV")
                 st.session_state.extracted_items = extracted
-            st.sidebar.success("CSVファイルの読み込み完了")
+            st.sidebar.success("CSVフォルダからの読み込み完了")
 
     # サイドバー：選択リスト表示
     st.sidebar.markdown("---")
@@ -221,9 +218,7 @@ def main():
         st.sidebar.write(f"合計金額: {total_price}円")
         for s_item in st.session_state.selected_items:
             st.sidebar.write(
-                f"- {s_item['product']} ("
-                f"{'収集' if s_item['chosen_type'] == 'collection' else '直接搬入'}: "
-                f"{s_item['chosen_price']}円)"
+                f"- {s_item['product']} ({'収集' if s_item['chosen_type'] == 'collection' else '直接搬入'}: {s_item['chosen_price']}円)"
             )
     else:
         st.sidebar.write("まだ品目が選択されていません。")
