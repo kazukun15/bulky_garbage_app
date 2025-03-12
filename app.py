@@ -11,19 +11,34 @@ from pathlib import Path
 from typing import List, Dict
 import pandas as pd
 
+# 五十音順ソート用に、jaconvなどの外部ライブラリを使わずに
+# Python標準だけで簡易的に「カタカナ → ヒラガナ」変換を行う関数を定義します。
+# ※正確性を高めたい場合は、jaconvやpykakasiなどを使うのがおすすめです。
+def kana_to_hira(text: str) -> str:
+    """
+    カタカナをヒラガナに変換して返す簡易実装。
+    それ以外の文字はそのまま返す。
+    """
+    result = []
+    for char in text:
+        code = ord(char)
+        # カタカナ(全角)の範囲: U+30A0～U+30FF
+        if 0x30A0 <= code <= 0x30FF:
+            # カタカナ → ヒラガナ (U+60)だけコードをずらす
+            result.append(chr(code - 0x60))
+        else:
+            result.append(char)
+    return "".join(result)
+
 # ---------------------------
-# 非同期API呼び出し（GeminiAPIと画像認識API）の定義
+# 非同期API呼び出し（GeminiAPIと画像認識API）
 # ---------------------------
 async def call_gemini_api(item_text: str) -> str:
-    """
-    Gemini API（models/gemini-2.0-flash）を実際に呼び出して、
-    品目のテキストから補正・予測結果を取得します。
-    Streamlitのsecretsに設定されたGEMINI_API_KEYを利用します。
-    """
     api_key = st.secrets["GEMINI_API_KEY"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": [{"text": item_text}]}]}
+
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status != 200:
@@ -33,18 +48,11 @@ async def call_gemini_api(item_text: str) -> str:
             return candidate
 
 async def call_image_recognition_api(image: bytes = None) -> str:
-    """
-    画像認識APIの呼び出し実装例です（現時点ではダミー実装）。
-    実際のエンドポイントがある場合はここを実装してください。
-    """
-    await asyncio.sleep(1)  # 模擬的な応答待ち
+    # ダミー実装：実際の画像認識APIがある場合はここを実装
+    await asyncio.sleep(1)
     return "画像認識API: 補正候補結果"
 
 async def process_item_async(item: Dict) -> Dict:
-    """
-    選択された品目に対して、GeminiAPIと画像認識APIを並列に呼び出し、
-    結果をitemに追加して返します。
-    """
     gemini_result, image_result = await asyncio.gather(
         call_gemini_api(item["product"]),
         call_image_recognition_api()
@@ -54,15 +62,10 @@ async def process_item_async(item: Dict) -> Dict:
     return item
 
 # ---------------------------
-# CSVから品名・収集料金・直接搬入料金を読み込む関数
+# CSV処理
 # ---------------------------
 @st.cache_data(show_spinner=False)
 def process_csv_directory(csv_dir: str = "CSV") -> List[Dict]:
-    """
-    指定されたCSVフォルダ内のすべてのCSVファイルを読み込み、
-    各行から「品名」「収集料金」「直接搬入料金」を抽出してリスト形式の辞書データに変換して返します。
-    CSVのヘッダーは「品名」「収集料金」「直接搬入料金」であることを前提とします。
-    """
     all_items = []
     csv_path = Path(csv_dir)
     if not csv_path.exists():
@@ -71,41 +74,38 @@ def process_csv_directory(csv_dir: str = "CSV") -> List[Dict]:
     for csv_file in csv_path.glob("*.csv"):
         df = pd.read_csv(csv_file)
         df.columns = [col.strip() for col in df.columns]
+        # もし「大項目」列があれば、同様に row.get("大項目", "") で取得可能
         for _, row in df.iterrows():
             product = str(row.get("品名", "")).strip()
             try:
-                collection_price = int(str(row.get("収集料金", "")).replace("円", "").strip())
+                collection_price = int(str(row.get("収集料金", "")).replace("円", "").replace(",", "").strip())
             except Exception:
                 collection_price = 0
             try:
-                direct_price = int(str(row.get("直接搬入料金", "")).replace("円", "").strip())
+                direct_price = int(str(row.get("直接搬入料金", "")).replace("円", "").replace(",", "").strip())
             except Exception:
                 direct_price = 0
             all_items.append({
                 "product": product,
                 "collection_price": collection_price,
                 "direct_price": direct_price
+                # "category": str(row.get("大項目", "")).strip()  # 大項目の列があれば
             })
     return all_items
 
 # ---------------------------
-# PDFから品名・収集料金・直接搬入料金を抽出する関数
+# PDF処理
 # ---------------------------
 def parse_line_as_item(line: str) -> Dict:
-    """
-    1行のテキストから「品名 収集料金 直接搬入料金」を抽出し、
-    辞書形式で返します。
-    例: 'ソファ 520円 260円' → {product: 'ソファ', collection_price: 520, direct_price: 260}
-    """
     parts = line.split()
     if len(parts) >= 3:
         product = parts[0]
         try:
-            collection_price = int(parts[1].replace("円", ""))
+            collection_price = int(parts[1].replace("円", "").replace(",", ""))
         except ValueError:
             collection_price = 0
         try:
-            direct_price = int(parts[2].replace("円", ""))
+            direct_price = int(parts[2].replace("円", "").replace(",", ""))
         except ValueError:
             direct_price = 0
         return {
@@ -117,11 +117,6 @@ def parse_line_as_item(line: str) -> Dict:
 
 @st.cache_data(show_spinner=False)
 def extract_pdf_data(pdf_path: str) -> List[Dict]:
-    """
-    指定されたPDFファイルから、まずpdfplumberでテキスト抽出を試み、
-    失敗またはテキストが取得できなかった場合はOCR（Tesseract + pdf2image）で抽出します。
-    各行は parse_line_as_item() に渡し、品名・収集料金・直接搬入料金を取り出します。
-    """
     extracted_items = []
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -153,10 +148,6 @@ def extract_pdf_data(pdf_path: str) -> List[Dict]:
 
 @st.cache_data(show_spinner=False)
 def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
-    """
-    指定されたPDFフォルダ内のすべてのPDFファイルを処理し、
-    全品目リストを返します。
-    """
     all_items = []
     pdf_path = Path(pdf_dir)
     if not pdf_path.exists():
@@ -172,7 +163,7 @@ def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
 # ---------------------------
 def main():
     st.set_page_config(page_title="粗大ごみ品目管理アプリ", layout="wide")
-    st.title("粗大ごみ品目管理アプリ（収集・直接搬入の料金区別版）")
+    st.title("粗大ごみ品目管理アプリ（検索バー・五十音ソート対応）")
 
     # セッション変数の初期化
     if "extracted_items" not in st.session_state:
@@ -180,7 +171,7 @@ def main():
     if "selected_items" not in st.session_state:
         st.session_state.selected_items = []
 
-    # サイドバー：入力ファイル形式の選択
+    # サイドバー：入力ファイル形式
     st.sidebar.header("操作メニュー")
     file_format = st.sidebar.radio("入力ファイル形式の選択", ("PDF", "CSV"))
 
@@ -209,6 +200,31 @@ def main():
                 st.session_state.extracted_items = extracted
             st.sidebar.success("CSVフォルダからの読み込み完了")
 
+    # ---------------------------------
+    # 検索バーとソートオプション
+    # ---------------------------------
+    st.subheader("検索・並び替えオプション")
+    search_query = st.text_input("検索バー：品名を入力してください（部分一致）", "")
+    sort_method = st.radio("並び順", ("なし", "五十音順"))
+
+    # 検索結果をフィルタ
+    filtered_items = []
+    if st.session_state.extracted_items:
+        if search_query:
+            filtered_items = [
+                item for item in st.session_state.extracted_items
+                if search_query in item["product"]
+            ]
+        else:
+            filtered_items = st.session_state.extracted_items.copy()
+
+        # ソート処理（五十音順）
+        if sort_method == "五十音順":
+            # カタカナ→ヒラガナ変換した文字列をキーにソート
+            filtered_items.sort(key=lambda x: kana_to_hira(x["product"]))
+    else:
+        st.info("まだ品目データが読み込まれていません。")
+
     # サイドバー：選択リスト表示
     st.sidebar.markdown("---")
     st.sidebar.header("選択リスト")
@@ -218,15 +234,16 @@ def main():
         st.sidebar.write(f"合計金額: {total_price}円")
         for s_item in st.session_state.selected_items:
             st.sidebar.write(
-                f"- {s_item['product']} ({'収集' if s_item['chosen_type'] == 'collection' else '直接搬入'}: {s_item['chosen_price']}円)"
+                f"- {s_item['product']} "
+                f"({'収集' if s_item['chosen_type'] == 'collection' else '直接搬入'}: {s_item['chosen_price']}円)"
             )
     else:
         st.sidebar.write("まだ品目が選択されていません。")
 
-    # メインエリア：抽出された品目一覧（収集料金・直接搬入料金）
+    # メインエリア：抽出された品目一覧（検索結果を表示）
     st.subheader("抽出された品目一覧（収集料金・直接搬入料金）")
-    if st.session_state.extracted_items:
-        for idx, item in enumerate(st.session_state.extracted_items):
+    if filtered_items:
+        for idx, item in enumerate(filtered_items):
             col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 2])
             with col1:
                 st.write(f"品名: **{item['product']}**")
@@ -250,14 +267,20 @@ def main():
                         processed_item["chosen_price"] = processed_item["direct_price"]
                         processed_item["chosen_type"] = "direct"
                     st.session_state.selected_items.append(processed_item)
-                    st.success(f"{processed_item['product']} を選択リストに追加しました ({selected_type}: {processed_item['chosen_price']}円)")
+                    st.success(
+                        f"{processed_item['product']} を選択リストに追加しました "
+                        f"({selected_type}: {processed_item['chosen_price']}円)"
+                    )
     else:
-        st.info("抽出された品目はありません。ファイルをアップロードするか、フォルダを処理してください。")
+        st.info("検索結果がありません。")
 
     # メインエリア：選択品目の詳細表示
     st.subheader("選択品目の詳細")
     for item in st.session_state.selected_items:
-        st.write(f"**{item['product']}** - {'収集' if item['chosen_type'] == 'collection' else '直接搬入'}: {item['chosen_price']}円")
+        st.write(
+            f"**{item['product']}** - "
+            f"{'収集' if item['chosen_type'] == 'collection' else '直接搬入'}: {item['chosen_price']}円"
+        )
         st.write("GeminiAPI結果: ", item.get("gemini", ""))
         st.write("画像認識結果: ", item.get("image_recognition", ""))
         st.markdown("---")
