@@ -1,8 +1,8 @@
-streamlit
-aiohttp
-pdfplumber
-pdf2image
-pytesseract
-Pillow
-pandas
-fpdf
+streamlit==1.21.0
+aiohttp==3.8.5
+pdfplumber==0.7.3
+pdf2image==1.16.3
+pytesseract==0.3.10
+Pillow==9.2.0
+pandas==1.5.3
+fpdf==1.7.2
