@@ -152,7 +152,7 @@ def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
 # Streamlitアプリ本体
 # ---------------------------
 def main():
-    st.set_page_config(page_title="粗大ごみ品目管理アプリ", layout="wide")
+    st.set_page_config(page_title="粗大ごみ手数料一覧計算アプリ", layout="wide")
     st.title("粗大ごみ手数料一覧計算アプリ")
 
     # セッション変数の初期化
