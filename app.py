@@ -59,16 +59,41 @@ async def process_item_async(item: Dict) -> Dict:
     return item
 
 # ---------------------------
-# PDFから品名と価格を抽出する関数（キャッシュ付き）
+# PDFから品名・収集料金・直接搬入料金を抽出する関数
 # ---------------------------
-@st.cache_data(show_spinner=False)
+def parse_line_as_item(line: str) -> Dict:
+    """
+    1行のテキストから '品名 収集料金 直接搬入料金' を抽出し、辞書形式で返す。
+    例: 'ソファ 520円 260円' → {product: 'ソファ', collection_price: 520, direct_price: 260}
+    """
+    parts = line.split()
+    if len(parts) >= 3:
+        product = parts[0]
+        try:
+            collection_price = int(parts[1].replace("円", ""))
+        except ValueError:
+            collection_price = 0
+        try:
+            direct_price = int(parts[2].replace("円", ""))
+        except ValueError:
+            direct_price = 0
+        return {
+            "product": product,
+            "collection_price": collection_price,
+            "direct_price": direct_price
+        }
+    # もし3列なければ空のdictを返す
+    return {}
+
 def extract_pdf_data(pdf_path: str) -> List[Dict]:
     """
     指定したPDFファイルから、まずpdfplumberでテキスト抽出を試み、
     失敗またはテキストが取得できなかった場合はOCR（Tesseract + pdf2image）で抽出します。
-    テキストは「品名 価格円」（例："ソファ 5000円"）というフォーマットを想定しています。
+    抽出した各行を parse_line_as_item() に渡し、品名・収集料金・直接搬入料金を取り出します。
     """
     extracted_items = []
+
+    # 1. pdfplumberでのテキスト抽出
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
@@ -76,18 +101,13 @@ def extract_pdf_data(pdf_path: str) -> List[Dict]:
                 if text:
                     lines = text.split('\n')
                     for line in lines:
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            product = parts[0]
-                            try:
-                                price = int(parts[1].replace("円", ""))
-                            except ValueError:
-                                price = 0
-                            extracted_items.append({"product": product, "price": price})
+                        item_dict = parse_line_as_item(line)
+                        if item_dict:
+                            extracted_items.append(item_dict)
     except Exception as e:
         st.error(f"pdfplumberでの抽出に失敗しました: {e}")
 
-    # テキスト抽出ができなかった場合はOCR処理
+    # 2. pdfplumberで抽出できなかった場合、または抽出結果が空の場合はOCR
     if not extracted_items:
         st.info("テキスト抽出ができなかったため、OCR処理を実施します。")
         try:
@@ -96,19 +116,14 @@ def extract_pdf_data(pdf_path: str) -> List[Dict]:
                 ocr_text = pytesseract.image_to_string(image, lang="jpn")
                 lines = ocr_text.split('\n')
                 for line in lines:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        product = parts[0]
-                        try:
-                            price = int(parts[1].replace("円", ""))
-                        except ValueError:
-                            price = 0
-                        extracted_items.append({"product": product, "price": price})
+                    item_dict = parse_line_as_item(line)
+                    if item_dict:
+                        extracted_items.append(item_dict)
         except Exception as e:
             st.error(f"OCRによる抽出に失敗しました: {e}")
+
     return extracted_items
 
-@st.cache_data(show_spinner=False)
 def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
     """
     指定されたディレクトリ内のすべてのPDFファイルを処理し、全品目リストを返します。
@@ -128,9 +143,9 @@ def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
 # ---------------------------
 def main():
     st.set_page_config(page_title="粗大ごみ品目管理アプリ", layout="wide")
-    st.title("粗大ごみ品目管理アプリ")
+    st.title("粗大ごみ品目管理アプリ（収集・直接搬入の料金区別版）")
 
-    # セッション変数の初期化（キャッシュされた結果は保持されるため、起動が速くなります）
+    # セッション変数の初期化
     if "extracted_items" not in st.session_state:
         st.session_state.extracted_items = []
     if "selected_items" not in st.session_state:
@@ -163,39 +178,71 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.header("選択リスト")
     if st.session_state.selected_items:
-        total_price = sum(item["price"] for item in st.session_state.selected_items)
+        # 合計金額を計算（ユーザーが選んだ price_type に応じた値段を使用）
+        total_price = sum(item["chosen_price"] for item in st.session_state.selected_items)
         st.sidebar.write(f"合計品数: {len(st.session_state.selected_items)}")
         st.sidebar.write(f"合計金額: {total_price}円")
         for s_item in st.session_state.selected_items:
-            st.sidebar.write(f"- {s_item['product']} ({s_item['price']}円)")
+            st.sidebar.write(
+                f"- {s_item['product']} ("
+                f"{'収集' if s_item['chosen_type'] == 'collection' else '直接搬入'}: "
+                f"{s_item['chosen_price']}円)"
+            )
     else:
         st.sidebar.write("まだ品目が選択されていません。")
 
     # メインエリア：抽出された品目一覧
-    st.subheader("抽出された品目一覧")
+    st.subheader("抽出された品目一覧（収集料金・直接搬入料金）")
     if st.session_state.extracted_items:
         for idx, item in enumerate(st.session_state.extracted_items):
-            col1, col2, col3 = st.columns([3, 2, 2])
+            # columnsでレイアウト分割
+            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 2])
             with col1:
                 st.write(f"品名: **{item['product']}**")
             with col2:
-                st.write(f"価格: {item['price']}円")
+                st.write(f"収集: {item['collection_price']}円")
             with col3:
+                st.write(f"直接搬入: {item['direct_price']}円")
+            with col4:
+                # ユーザーが「収集」か「直接搬入」かを選べるセレクトボックス
+                choice_key = f"choice_{idx}"
+                selected_type = st.selectbox(
+                    "区分を選択",
+                    options=["収集", "直接搬入"],
+                    key=choice_key
+                )
+            with col5:
+                # 選択ボタン
                 if st.button("選択", key=f"select_{idx}"):
-                    # 非同期処理を用いて実際のAPI呼び出しを実施し、結果を追加する
+                    # 非同期処理を用いてAPI呼び出しを実施し、結果を追加する
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     processed_item = loop.run_until_complete(process_item_async(item.copy()))
                     loop.close()
+
+                    # 選択時点で、ユーザーが選んだ区分に応じて chosen_price を設定
+                    if selected_type == "収集":
+                        processed_item["chosen_price"] = processed_item["collection_price"]
+                        processed_item["chosen_type"] = "collection"
+                    else:
+                        processed_item["chosen_price"] = processed_item["direct_price"]
+                        processed_item["chosen_type"] = "direct"
+
                     st.session_state.selected_items.append(processed_item)
-                    st.success(f"{item['product']} を選択リストに追加しました")
+                    st.success(
+                        f"{processed_item['product']} を選択リストに追加しました "
+                        f"({selected_type}: {processed_item['chosen_price']}円)"
+                    )
     else:
         st.info("抽出された品目はありません。PDFをアップロードするか、PDFフォルダを処理してください。")
 
     # メインエリア：選択品目の詳細表示
     st.subheader("選択品目の詳細")
     for item in st.session_state.selected_items:
-        st.write(f"**{item['product']}** - {item['price']}円")
+        st.write(
+            f"**{item['product']}** - "
+            f"{'収集' if item['chosen_type'] == 'collection' else '直接搬入'}: {item['chosen_price']}円"
+        )
         st.write("GeminiAPI結果: ", item.get("gemini", ""))
         st.write("画像認識結果: ", item.get("image_recognition", ""))
         st.markdown("---")
