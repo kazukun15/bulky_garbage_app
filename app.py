@@ -15,13 +15,21 @@ from typing import List, Dict
 # ---------------------------
 async def call_gemini_api(item_text: str) -> str:
     """
-    Gemini API（models/gemini-2.0-flash）に対して、品目のテキストをもとに曖昧なものの補正・予測を実行する。
-    Streamlitのsecretsに設定されたGEMINI_API_KEYを利用。
+    Gemini API（models/gemini-2.0-flash）を実際に呼び出して、品目のテキストから補正・予測結果を取得する。
+    Streamlitのsecretsに設定されたGEMINI_API_KEYを利用します。
     """
     api_key = st.secrets["GEMINI_API_KEY"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
-    payload = {"contents": [{"parts": [{"text": item_text}]}]}
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": item_text}
+                ]
+            }
+        ]
+    }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status != 200:
@@ -32,14 +40,15 @@ async def call_gemini_api(item_text: str) -> str:
 
 async def call_image_recognition_api(image: bytes = None) -> str:
     """
-    画像認識APIのダミー実装。実際は画像データを送信し、曖昧な品目の認識・補正結果を返す。
+    画像認識APIの呼び出し実装例です。
+    ※現時点ではダミー実装ですが、実際のエンドポイントが分かればここを実装してください。
     """
     await asyncio.sleep(1)  # 模擬的なAPI応答待ち
     return "画像認識API: 補正候補結果"
 
 async def process_item_async(item: Dict) -> Dict:
     """
-    選択された品目に対して、GeminiAPIと画像認識APIを並列に呼び出し、結果をitemに追加する。
+    選択された品目に対して、GeminiAPIと画像認識APIを並列に呼び出し、結果をitemに追加します。
     """
     gemini_result, image_result = await asyncio.gather(
         call_gemini_api(item["product"]),
@@ -50,12 +59,14 @@ async def process_item_async(item: Dict) -> Dict:
     return item
 
 # ---------------------------
-# PDFから品名と価格を抽出する関数
+# PDFから品名と価格を抽出する関数（キャッシュ付き）
 # ---------------------------
+@st.cache_data(show_spinner=False)
 def extract_pdf_data(pdf_path: str) -> List[Dict]:
     """
-    指定したPDFファイルから、まずpdfplumberでテキスト抽出を試み、失敗またはテキストが取得できなかった場合はOCR（Tesseract + pdf2image）を利用する。
-    テキストは「品名 価格円」（例："ソファ 5000円"）というフォーマットを想定。
+    指定したPDFファイルから、まずpdfplumberでテキスト抽出を試み、
+    失敗またはテキストが取得できなかった場合はOCR（Tesseract + pdf2image）で抽出します。
+    テキストは「品名 価格円」（例："ソファ 5000円"）というフォーマットを想定しています。
     """
     extracted_items = []
     try:
@@ -76,7 +87,7 @@ def extract_pdf_data(pdf_path: str) -> List[Dict]:
     except Exception as e:
         st.error(f"pdfplumberでの抽出に失敗しました: {e}")
 
-    # テキスト抽出できなかった場合、または抽出結果が空の場合はOCR処理
+    # テキスト抽出ができなかった場合はOCR処理
     if not extracted_items:
         st.info("テキスト抽出ができなかったため、OCR処理を実施します。")
         try:
@@ -97,9 +108,10 @@ def extract_pdf_data(pdf_path: str) -> List[Dict]:
             st.error(f"OCRによる抽出に失敗しました: {e}")
     return extracted_items
 
+@st.cache_data(show_spinner=False)
 def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
     """
-    指定されたディレクトリ内のすべてのPDFファイルを処理し、全品目リストを返す。
+    指定されたディレクトリ内のすべてのPDFファイルを処理し、全品目リストを返します。
     """
     all_items = []
     pdf_path = Path(pdf_dir)
@@ -117,17 +129,17 @@ def process_pdf_directory(pdf_dir: str = "PDF") -> List[Dict]:
 def main():
     st.set_page_config(page_title="粗大ごみ品目管理アプリ", layout="wide")
     st.title("粗大ごみ品目管理アプリ")
-    
-    # セッション変数の初期化
+
+    # セッション変数の初期化（キャッシュされた結果は保持されるため、起動が速くなります）
     if "extracted_items" not in st.session_state:
         st.session_state.extracted_items = []
     if "selected_items" not in st.session_state:
         st.session_state.selected_items = []
-    
+
     # サイドバー：操作メニュー
     st.sidebar.header("操作メニュー")
     pdf_source = st.sidebar.radio("PDF入力元の選択", ("アップロード", "PDFフォルダから読み込み"))
-    
+
     # PDFアップロードの場合
     if pdf_source == "アップロード":
         uploaded_file = st.sidebar.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
@@ -140,13 +152,13 @@ def main():
                 st.session_state.extracted_items = extracted
             st.sidebar.success("PDFアップロードおよび抽出完了")
     else:
-        # PDFフォルダから処理する場合（プロジェクトルートのPDFフォルダ内のPDFを対象）
+        # PDFフォルダから処理する場合（プロジェクトルートのPDFフォルダ内のPDFが対象）
         if st.sidebar.button("PDFフォルダ内のファイルを処理"):
             with st.spinner("PDFフォルダ内のファイルを処理中..."):
                 extracted = process_pdf_directory("PDF")
                 st.session_state.extracted_items = extracted
             st.sidebar.success("PDFフォルダからの抽出完了")
-    
+
     # サイドバー：選択リスト表示
     st.sidebar.markdown("---")
     st.sidebar.header("選択リスト")
@@ -158,7 +170,7 @@ def main():
             st.sidebar.write(f"- {s_item['product']} ({s_item['price']}円)")
     else:
         st.sidebar.write("まだ品目が選択されていません。")
-    
+
     # メインエリア：抽出された品目一覧
     st.subheader("抽出された品目一覧")
     if st.session_state.extracted_items:
@@ -170,7 +182,7 @@ def main():
                 st.write(f"価格: {item['price']}円")
             with col3:
                 if st.button("選択", key=f"select_{idx}"):
-                    # 非同期処理を用いてAPI呼び出しを実施し、結果を追加する
+                    # 非同期処理を用いて実際のAPI呼び出しを実施し、結果を追加する
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     processed_item = loop.run_until_complete(process_item_async(item.copy()))
@@ -179,7 +191,7 @@ def main():
                     st.success(f"{item['product']} を選択リストに追加しました")
     else:
         st.info("抽出された品目はありません。PDFをアップロードするか、PDFフォルダを処理してください。")
-    
+
     # メインエリア：選択品目の詳細表示
     st.subheader("選択品目の詳細")
     for item in st.session_state.selected_items:
@@ -187,6 +199,6 @@ def main():
         st.write("GeminiAPI結果: ", item.get("gemini", ""))
         st.write("画像認識結果: ", item.get("image_recognition", ""))
         st.markdown("---")
-    
+
 if __name__ == "__main__":
     main()
